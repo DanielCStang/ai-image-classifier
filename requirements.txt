@@ -5,3 +5,4 @@ pillow
 pandas
 matplotlib
 numpy
+plotly
