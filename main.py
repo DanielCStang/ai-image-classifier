@@ -9,19 +9,20 @@ from datetime import datetime
 from transformers import pipeline
 import plotly.express as px
 
-# =========================
+# =========================================================
 # PAGE CONFIG
-# =========================
+# =========================================================
 
 st.set_page_config(
-    page_title="Fast AI Image Classifier",
-    page_icon="⚡",
-    layout="wide"
+    page_title="AI Image Classification Dashboard",
+    page_icon="🖼️",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# =========================
+# =========================================================
 # SESSION STATE
-# =========================
+# =========================================================
 
 if "model" not in st.session_state:
     st.session_state.model = None
@@ -29,9 +30,9 @@ if "model" not in st.session_state:
 if "history" not in st.session_state:
     st.session_state.history = []
 
-# =========================
-# MODEL OPTIONS (FAST FIRST)
-# =========================
+# =========================================================
+# MODEL OPTIONS
+# =========================================================
 
 MODELS = {
     "⚡ Fast (MobileNet)": "google/mobilenet_v2_1.0_224",
@@ -39,51 +40,76 @@ MODELS = {
     "🎯 Accurate (ViT)": "google/vit-base-patch16-224"
 }
 
-# =========================
-# LOAD MODEL (CACHED)
-# =========================
+# =========================================================
+# LOAD MODEL
+# =========================================================
 
 @st.cache_resource
 def load_model(model_name: str):
 
     device = 0 if torch.cuda.is_available() else -1
 
-    return pipeline(
-        "image-classification",
-        model=model_name,
-        device=device
-    )
+    try:
+        model = pipeline(
+            "image-classification",
+            model=model_name,
+            device=device
+        )
+        return model
 
-# =========================
+    except Exception as e:
+
+        st.warning(f"Primary model failed: {e}")
+
+        try:
+            fallback_model = pipeline(
+                "image-classification",
+                model="microsoft/resnet-50",
+                device=-1
+            )
+
+            st.success("Fallback model loaded successfully")
+            return fallback_model
+
+        except Exception as fallback_error:
+            st.error(f"Fallback model also failed: {fallback_error}")
+            return None
+
+# =========================================================
 # IMAGE PREPROCESS
-# =========================
+# =========================================================
 
 def preprocess(image: Image.Image):
 
     if image.mode != "RGB":
         image = image.convert("RGB")
 
-    # FAST: reduce resolution BEFORE inference
+    # Resize for faster inference
     image.thumbnail((224, 224))
 
     return image
 
-# =========================
+# =========================================================
 # PREDICT
-# =========================
+# =========================================================
 
-def predict(image, model, top_k=3):
+def predict(image, model, top_k=5):
 
-    image = preprocess(image)
+    try:
+        image = preprocess(image)
 
-    with torch.inference_mode():
-        preds = model(image, top_k=top_k)
+        with torch.inference_mode():
+            preds = model(image, top_k=top_k)
 
-    return preds
+        return preds
 
-# =========================
-# CHART (FAST PLOTLY)
-# =========================
+    except Exception as e:
+        st.error(f"Prediction error: {e}")
+        return None
+
+# =========================================================
+# PLOTLY CHART
+# =========================================================
 
 def plot_results(preds):
 
@@ -95,55 +121,242 @@ def plot_results(preds):
         y="label",
         orientation="h",
         color="score",
-        color_continuous_scale="viridis"
+        color_continuous_scale="viridis",
+        text="score"
+    )
+
+    fig.update_traces(
+        texttemplate='%{text:.2%}',
+        textposition='outside'
     )
 
     fig.update_layout(
-        height=350,
-        margin=dict(l=10, r=10, t=30, b=10)
+        title="Top Predictions",
+        xaxis_title="Confidence Score",
+        yaxis_title="Class",
+        height=400,
+        margin=dict(l=10, r=10, t=50, b=10)
     )
 
     return fig
 
-# =========================
+# =========================================================
+# ANALYTICS DASHBOARD
+# =========================================================
+
+def analytics_dashboard():
+
+    history = st.session_state.history
+
+    if not history:
+        st.info("No classified images yet.")
+        return
+
+    all_data = []
+
+    for item in history:
+
+        for pred in item["preds"]:
+
+            all_data.append({
+                "Image": item["name"],
+                "Label": pred["label"],
+                "Score": pred["score"],
+                "Timestamp": item["time"]
+            })
+
+    df = pd.DataFrame(all_data)
+
+    # =====================================================
+    # METRICS
+    # =====================================================
+
+    st.subheader("📈 Metrics")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Total Images", len(history))
+
+    with col2:
+        st.metric("Total Predictions", len(df))
+
+    with col3:
+        avg_conf = df["Score"].mean()
+        st.metric("Avg Confidence", f"{avg_conf:.2%}")
+
+    with col4:
+        top_class = df["Label"].mode().iloc[0]
+        st.metric("Most Common Class", top_class)
+
+    # =====================================================
+    # CHARTS
+    # =====================================================
+
+    st.subheader("📊 Analytics")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        class_counts = (
+            df["Label"]
+            .value_counts()
+            .head(10)
+            .reset_index()
+        )
+
+        class_counts.columns = ["Label", "Count"]
+
+        fig1 = px.bar(
+            class_counts,
+            x="Count",
+            y="Label",
+            orientation="h",
+            title="Top Predicted Classes",
+            color="Count"
+        )
+
+        st.plotly_chart(fig1, use_container_width=True)
+
+    with col2:
+
+        fig2 = px.histogram(
+            df,
+            x="Score",
+            nbins=20,
+            title="Confidence Score Distribution"
+        )
+
+        st.plotly_chart(fig2, use_container_width=True)
+
+    # =====================================================
+    # DETAILED TABLE
+    # =====================================================
+
+    st.subheader("📋 Detailed Results")
+
+    detailed = []
+
+    for item in history:
+
+        top_pred = item["preds"][0]
+
+        detailed.append({
+            "Image": item["name"],
+            "Top Prediction": top_pred["label"],
+            "Confidence": f"{top_pred['score']:.2%}",
+            "Timestamp": item["time"].strftime("%Y-%m-%d %H:%M:%S")
+        })
+
+    results_df = pd.DataFrame(detailed)
+
+    st.dataframe(
+        results_df,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # =====================================================
+    # CSV EXPORT
+    # =====================================================
+
+    csv_buffer = io.StringIO()
+    results_df.to_csv(csv_buffer, index=False)
+
+    st.download_button(
+        label="📥 Download Results CSV",
+        data=csv_buffer.getvalue(),
+        file_name=f"classification_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv"
+    )
+
+    # =====================================================
+    # CLEAR BUTTON
+    # =====================================================
+
+    if st.button("🗑️ Clear All Results"):
+
+        st.session_state.history = []
+        st.rerun()
+
+# =========================================================
 # UI HEADER
-# =========================
+# =========================================================
 
-st.title("⚡ Fast AI Image Classifier")
-st.caption("Optimized for speed + deployment (Streamlit Cloud / Hugging Face Spaces)")
+st.title("🖼️ AI Image Classification Dashboard")
 
-# =========================
+st.markdown("""
+Classify images using Hugging Face AI models with:
+- ⚡ Fast inference
+- 📊 Analytics dashboard
+- 📂 Classification history
+- 📥 CSV export
+- 🚀 Deployment optimization
+""")
+
+# =========================================================
 # SIDEBAR
-# =========================
+# =========================================================
 
 with st.sidebar:
 
-    st.header("Settings")
+    st.header("⚙️ Settings")
 
-    model_choice = st.selectbox("Model", list(MODELS.keys()))
-    top_k = st.slider("Top K", 1, 5, 3)
-    threshold = st.slider("Confidence Threshold", 0.0, 1.0, 0.2)
+    model_choice = st.selectbox(
+        "Choose Model",
+        list(MODELS.keys())
+    )
 
-    if st.button("🚀 Load Model"):
+    top_k = st.slider(
+        "Top K Predictions",
+        1,
+        10,
+        5
+    )
 
-        st.session_state.model = load_model(MODELS[model_choice])
-        st.success("Model loaded!")
+    threshold = st.slider(
+        "Confidence Threshold",
+        0.0,
+        1.0,
+        0.2
+    )
 
-# =========================
-# MAIN UI
-# =========================
+    if st.button("🚀 Load Model", type="primary"):
 
-tab1, tab2 = st.tabs(["📷 Classify", "📂 History"])
+        with st.spinner("Loading model..."):
 
-# =========================
+            st.session_state.model = load_model(
+                MODELS[model_choice]
+            )
+
+        if st.session_state.model:
+            st.success("Model loaded successfully!")
+
+# =========================================================
+# TABS
+# =========================================================
+
+tab1, tab2, tab3 = st.tabs([
+    "📷 Classify",
+    "📂 History",
+    "📊 Analytics"
+])
+
+# =========================================================
 # TAB 1 - CLASSIFY
-# =========================
+# =========================================================
 
 with tab1:
 
-    uploaded = st.file_uploader("Upload image", type=["jpg", "jpeg", "png"])
+    st.header("Image Classification")
 
-    if uploaded and st.session_state.model:
+    uploaded = st.file_uploader(
+        "Upload an image",
+        type=["jpg", "jpeg", "png"]
+    )
+
+    if uploaded:
 
         image = Image.open(uploaded)
 
@@ -154,56 +367,140 @@ with tab1:
 
         with col2:
 
-            if st.button("Run Classification"):
+            if st.session_state.model:
 
-                preds = predict(image, st.session_state.model, top_k)
+                if st.button("🔍 Run Classification"):
 
-                st.subheader("Results")
+                    with st.spinner("Classifying image..."):
 
-                for i, p in enumerate(preds):
+                        preds = predict(
+                            image,
+                            st.session_state.model,
+                            top_k
+                        )
 
-                    icon = "🟢" if p["score"] >= threshold else "🟡"
+                    if preds:
 
-                    st.write(
-                        f"{i+1}. {icon} **{p['label']}** - {p['score']:.2%}"
-                    )
+                        st.subheader("🎯 Predictions")
 
-                st.plotly_chart(plot_results(preds), use_container_width=True)
+                        for i, p in enumerate(preds):
 
-                # store compressed history (FAST MEMORY)
-                thumb = image.copy()
-                thumb.thumbnail((128, 128))
+                            icon = (
+                                "🟢"
+                                if p["score"] >= threshold
+                                else "🟡"
+                            )
 
-                buffer = io.BytesIO()
-                thumb.save(buffer, format="JPEG", quality=60)
+                            st.write(
+                                f"{i+1}. {icon} "
+                                f"**{p['label']}** "
+                                f"- {p['score']:.2%}"
+                            )
 
-                st.session_state.history.append({
-                    "name": uploaded.name,
-                    "time": datetime.now(),
-                    "preds": preds,
-                    "img": buffer.getvalue()
-                })
+                        st.plotly_chart(
+                            plot_results(preds),
+                            use_container_width=True
+                        )
 
-    elif uploaded:
-        st.warning("Load model first")
+                        # =====================================
+                        # STORE COMPRESSED HISTORY
+                        # =====================================
 
-# =========================
+                        thumb = image.copy()
+                        thumb.thumbnail((128, 128))
+
+                        buffer = io.BytesIO()
+
+                        thumb.save(
+                            buffer,
+                            format="JPEG",
+                            quality=60
+                        )
+
+                        st.session_state.history.append({
+                            "name": uploaded.name,
+                            "time": datetime.now(),
+                            "preds": preds,
+                            "img": buffer.getvalue()
+                        })
+
+            else:
+                st.warning("Please load a model first.")
+
+# =========================================================
 # TAB 2 - HISTORY
-# =========================
+# =========================================================
 
 with tab2:
 
-    st.header("History")
+    st.header("📂 Classification History")
 
-    if not st.session_state.history:
-        st.info("No images yet")
+    history = st.session_state.history
 
-    for item in reversed(st.session_state.history):
+    if not history:
+        st.info("No classified images yet.")
 
-        with st.expander(f"{item['name']} - {item['time'].strftime('%H:%M:%S')}"):
+    else:
 
-            img = Image.open(io.BytesIO(item["img"]))
-            st.image(img, width=200)
+        st.write(f"Total images classified: {len(history)}")
 
-            for p in item["preds"][:3]:
-                st.write(f"**{p['label']}** - {p['score']:.2%}")
+        for item in reversed(history):
+
+            with st.expander(
+                f"{item['name']} - "
+                f"{item['time'].strftime('%Y-%m-%d %H:%M:%S')}"
+            ):
+
+                col1, col2 = st.columns([1, 2])
+
+                with col1:
+
+                    img = Image.open(
+                        io.BytesIO(item["img"])
+                    )
+
+                    st.image(img, width=200)
+
+                with col2:
+
+                    st.write("### Top Predictions")
+
+                    for p in item["preds"][:3]:
+
+                        st.write(
+                            f"• **{p['label']}** "
+                            f"- {p['score']:.2%}"
+                        )
+
+# =========================================================
+# TAB 3 - ANALYTICS
+# =========================================================
+
+with tab3:
+
+    st.header("📊 Results & Analytics")
+
+    analytics_dashboard()
+
+# =========================================================
+# FOOTER
+# =========================================================
+
+st.markdown("---")
+
+st.markdown("""
+<div style='text-align: center; color: gray;'>
+
+Built with ❤️ using:
+- Streamlit
+- Hugging Face Transformers
+- Plotly
+- PyTorch
+
+Optimized for:
+⚡ Fast inference
+🚀 Cloud deployment
+📊 Analytics dashboards
+
+</div>
+""", unsafe_allow_html=True)
